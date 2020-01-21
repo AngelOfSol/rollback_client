@@ -1,5 +1,6 @@
 use ggez::graphics::{self, Image};
 use ggez::{self, Context, GameResult};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub struct Player {
@@ -13,6 +14,7 @@ pub struct GameState {
     p2: Player,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GameInput {
     pub x_axis: i32,
 }
