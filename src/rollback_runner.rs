@@ -20,6 +20,7 @@ pub struct RollbackRunner {
     start_time: Instant,
     skip_frames: i32,
     ping: f32,
+    dropped: Vec<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -30,7 +31,7 @@ struct InputTiming {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct InputData {
     frame: i32,
-    input: InputTiming,
+    input: Vec<InputTiming>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -39,7 +40,7 @@ enum RollbackPacket {
     Pong(u128),
     Input(InputData),
     Request(i32),
-    Provide(InputTiming),
+    Provide(Vec<InputTiming>),
 }
 
 impl RollbackRunner {
@@ -57,6 +58,7 @@ impl RollbackRunner {
             current_frame: 0,
             skip_frames: 0,
             ping: 0.0,
+            dropped: vec![false; 300],
         }
     }
 }
@@ -65,8 +67,15 @@ fn ping_in_delay(value: f32) -> i32 {
     ((value + 3.0) / 32.0).ceil() as i32
 }
 
+impl RollbackRunner {
+    pub fn delay(&self) -> i32 {
+        ping_in_delay(self.ping) + 1
+    }
+}
+
 impl EventHandler for RollbackRunner {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+        let delay = self.delay();
         let start_time = Instant::now();
         let current_time = (start_time - self.start_time).as_millis();
         let (local_player, net_player) = if self.player1 {
@@ -74,12 +83,6 @@ impl EventHandler for RollbackRunner {
         } else {
             (&mut self.p2_input, &mut self.p1_input)
         };
-        if !net_player.has_input(self.current_frame) {
-            self.client
-                .send(&RollbackPacket::Request(self.current_frame))
-                .unwrap();
-            dbg!("missing net sides ");
-        }
 
         'poll_packets: loop {
             match self.client.recv::<RollbackPacket>() {
@@ -91,23 +94,35 @@ impl EventHandler for RollbackRunner {
                         let ping_time = current_time - pong_time;
                         self.ping = self.ping * 0.9 + ping_time as f32 * 0.1;
                     }
-                    RollbackPacket::Input(input) => {
+                    RollbackPacket::Input(mut input) => {
                         // this is for calculating how many frames to skip
-                        self.skip_frames =
-                            self.current_frame - (input.frame + ping_in_delay(self.ping));
-                        self.recieved_inputs.push(input.input);
+
+                        self.skip_frames = 0.max(self.current_frame - input.frame);
+                        self.recieved_inputs.append(&mut input.input);
                     }
 
                     RollbackPacket::Request(frame) => {
-                        if let Some(input) = local_player.get_input(frame) {
-                            let input = input.clone();
-                            self.client
-                                .send(&RollbackPacket::Provide(InputTiming { frame, input }))
-                                .unwrap();
+                        if let Some(_) = local_player.get_input(frame) {
+                            if frame <= self.current_frame {
+                                let (start_frame, data) = local_player.get_inputs(
+                                    self.current_frame,
+                                    100.min(self.current_frame - frame + 1) as usize,
+                                );
+                                let inputs = data
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(idx, input)| InputTiming {
+                                        frame: idx as i32 + start_frame,
+                                        input: input.clone(),
+                                    })
+                                    .collect();
+                                let send = RollbackPacket::Provide(inputs);
+                                self.client.send(&send).unwrap();
+                            }
                         }
                     }
-                    RollbackPacket::Provide(requested) => {
-                        self.recieved_inputs.push(requested);
+                    RollbackPacket::Provide(mut requested) => {
+                        self.recieved_inputs.append(&mut requested);
                     }
                 },
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break 'poll_packets,
@@ -120,23 +135,31 @@ impl EventHandler for RollbackRunner {
         if ggez::timer::check_update_time(ctx, 60) {
             if self.skip_frames > 0 {
                 self.skip_frames -= 1;
-                dbg!("skipped a frame!");
             } else {
-                local_player.add_local_input(
-                    self.current_frame,
-                    GameInput {
-                        x_axis: self.input_state,
-                    },
-                );
+                if !local_player.has_input(self.current_frame + delay) {
+                    local_player.add_local_input(
+                        self.current_frame + delay,
+                        GameInput {
+                            x_axis: self.input_state,
+                        },
+                    );
+                }
+
+                // adjust the amount of extra data based on the delay
+                let (start_frame, data) =
+                    local_player.get_inputs(self.current_frame + delay, 5.max(delay as usize + 1));
+                let inputs = data
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, input)| InputTiming {
+                        frame: idx as i32 + start_frame,
+                        input: input.clone(),
+                    })
+                    .collect();
                 self.client
                     .send(&RollbackPacket::Input(InputData {
-                        input: InputTiming {
-                            input: GameInput {
-                                x_axis: self.input_state,
-                            },
-                            frame: self.current_frame,
-                        },
-                        frame: self.current_frame,
+                        input: inputs,
+                        frame: self.current_frame + delay,
                     }))
                     .unwrap();
                 let start_time = Instant::now();
@@ -149,6 +172,11 @@ impl EventHandler for RollbackRunner {
                 for input in self.recieved_inputs.drain(..) {
                     net_player.add_network_input(input.frame, input.input);
                 }
+                if !net_player.has_input(self.current_frame) {
+                    self.client
+                        .send(&RollbackPacket::Request(self.current_frame))
+                        .unwrap();
+                }
 
                 if self.p1_input.has_input(self.current_frame)
                     && self.p2_input.has_input(self.current_frame)
@@ -158,7 +186,14 @@ impl EventHandler for RollbackRunner {
                         &self.p2_input.get_input(self.current_frame).unwrap(),
                     );
                     self.current_frame += 1;
+
+                    self.p1_input.clean(self.current_frame);
+                    self.p2_input.clean(self.current_frame);
+                    self.dropped.push(false);
+                } else {
+                    self.dropped.push(true);
                 }
+                self.dropped.remove(0);
             }
         }
 
@@ -192,6 +227,39 @@ impl EventHandler for RollbackRunner {
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         graphics::clear(ctx, graphics::BLACK);
         self.current_state.draw(ctx, 100.0)?;
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!("Delay: {:.2}", self.delay())),
+            graphics::DrawParam::default().dest([30.0, 200.0]),
+        )?;
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!("Ping: {:.2}", self.ping / 2.0)),
+            graphics::DrawParam::default().dest([30.0, 250.0]),
+        )?;
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!("Current Frame: {:.2}", self.current_frame)),
+            graphics::DrawParam::default().dest([30.0, 300.0]),
+        )?;
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!(
+                "Dropped Frame (%): {:.2}",
+                self.dropped.iter().filter(|x| **x).count() as f32 / self.dropped.len() as f32
+                    * 100.0
+            )),
+            graphics::DrawParam::default().dest([30.0, 350.0]),
+        )?;
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!(
+                "Dropped Frame (per second): {:.0}",
+                self.dropped.iter().filter(|x| **x).count() as f32 / self.dropped.len() as f32
+                    * 60.0
+            )),
+            graphics::DrawParam::default().dest([30.0, 400.0]),
+        )?;
         graphics::present(ctx)
     }
 }

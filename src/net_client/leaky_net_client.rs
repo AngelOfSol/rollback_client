@@ -18,8 +18,8 @@ impl LeakyNetClient {
         LeakyNetClient {
             internal_client,
             delayed_packets: Vec::new(),
-            packet_loss: 0.0,
-            delay: Duration::from_millis(0),
+            packet_loss: 0.2,
+            delay: Duration::from_millis(100),
         }
     }
 

@@ -17,12 +17,13 @@ pub struct NetClient {
 
 impl NetClient {
     pub fn send<T: Serialize>(&self, data: &T) -> io::Result<usize> {
-        self.udp_socket.send(&bincode::serialize(data).map_err(|_| {
+        let data = bincode::serialize(data).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "bincode serialization failed before sending a packet",
             )
-        })?)
+        })?;
+        self.udp_socket.send(&data)
     }
     pub fn recv<T: DeserializeOwned>(&mut self) -> io::Result<T> {
         let len = self.udp_socket.recv(&mut self.buffer)?;
