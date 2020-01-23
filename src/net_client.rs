@@ -11,7 +11,6 @@ pub type TestNetClient = leaky_net_client::LeakyNetClient;
 pub struct NetClient {
     pub udp_socket: UdpSocket,
     pub buffer: [u8; 128],
-    tcp_listener: TcpListener,
     tcp_stream: TcpStream,
 }
 
@@ -60,14 +59,12 @@ impl NetClient {
     pub fn connect<A: ToSocketAddrs + Copy + std::fmt::Debug>(target_addr: A) -> io::Result<Self> {
         let tcp_stream = TcpStream::connect(target_addr)?;
         let local_addr = tcp_stream.local_addr()?;
-        let tcp_listener = TcpListener::bind(local_addr)?;
         let udp_socket = UdpSocket::bind(local_addr)?;
         udp_socket.connect(target_addr)?;
         udp_socket.set_nonblocking(true)?;
         Ok(NetClient {
             udp_socket,
             buffer: [0; 128],
-            tcp_listener,
             tcp_stream,
         })
     }
@@ -81,7 +78,6 @@ impl NetClient {
         Ok(NetClient {
             udp_socket,
             buffer: [0; 128],
-            tcp_listener,
             tcp_stream,
         })
     }

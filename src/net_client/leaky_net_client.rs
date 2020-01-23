@@ -37,14 +37,18 @@ impl LeakyNetClient {
     }
 
     pub fn send<T: Serialize + std::fmt::Debug>(&mut self, data: &T) -> io::Result<usize> {
-        self.handle_packet(data)?;
-        let res = Ok(self
-            .delayed_packets
-            .last()
-            .map(|item| item.0.len())
-            .unwrap_or(0));
-        self.send_queued()?;
-        res
+        if self.delay == Duration::from_millis(0) && self.packet_loss <= 0.005 {
+            self.internal_client.send(data)
+        } else {
+            self.handle_packet(data)?;
+            let res = Ok(self
+                .delayed_packets
+                .last()
+                .map(|item| item.0.len())
+                .unwrap_or(0));
+            self.send_queued()?;
+            res
+        }
     }
 
     pub fn send_queued(&mut self) -> io::Result<()> {

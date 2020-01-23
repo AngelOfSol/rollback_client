@@ -46,10 +46,6 @@ impl<T: Clone> InputHistory<T> {
         self.data.get(relative_frame)
     }
 
-    pub fn latest_input(&self) -> i32 {
-        self.front_frame + self.data.len() as i32 - 1
-    }
-
     pub fn get_inputs(&self, frame: i32, amt: usize) -> (i32, &[T]) {
         let frame = self.adjust_frame(frame);
         let end_idx = self.data.len().min(frame + 1);
