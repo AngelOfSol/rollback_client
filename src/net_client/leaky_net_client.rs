@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 pub struct LeakyNetClient {
     internal_client: NetClient,
     delayed_packets: Vec<(Vec<u8>, Instant)>,
-    packet_loss: f32,
-    delay: Duration,
+    pub packet_loss: f32,
+    pub delay: Duration,
 }
 
 impl LeakyNetClient {
@@ -18,8 +18,8 @@ impl LeakyNetClient {
         LeakyNetClient {
             internal_client,
             delayed_packets: Vec::new(),
-            packet_loss: 0.2,
-            delay: Duration::from_millis(100),
+            packet_loss: 0.0,
+            delay: Duration::from_millis(0),
         }
     }
 

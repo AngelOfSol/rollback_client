@@ -213,6 +213,24 @@ impl EventHandler for RollbackRunner {
                 KeyCode::Right => 1,
                 _ => 0,
             };
+            match keycode {
+                KeyCode::D => self.client.delay += std::time::Duration::from_millis(5),
+                KeyCode::A => {
+                    if self.client.delay >= std::time::Duration::from_millis(5) {
+                        self.client.delay -= std::time::Duration::from_millis(5)
+                    }
+                }
+                KeyCode::W => self.client.packet_loss += 0.02,
+                KeyCode::S => self.client.packet_loss -= 0.02,
+                _ => (),
+            };
+
+            self.client.packet_loss = self.client.packet_loss.max(0.0).min(1.0);
+            self.client.delay = self
+                .client
+                .delay
+                .max(std::time::Duration::from_millis(0))
+                .min(std::time::Duration::from_millis(100));
         }
     }
 
@@ -220,6 +238,7 @@ impl EventHandler for RollbackRunner {
         self.input_state = match keycode {
             KeyCode::Left => 0,
             KeyCode::Right => 0,
+
             _ => 0,
         };
     }
@@ -229,17 +248,17 @@ impl EventHandler for RollbackRunner {
         self.current_state.draw(ctx, 100.0)?;
         graphics::draw(
             ctx,
-            &graphics::Text::new(format!("Delay: {:.2}", self.delay())),
+            &graphics::Text::new(format!("Delay: {:.2}f", self.delay())),
             graphics::DrawParam::default().dest([30.0, 200.0]),
         )?;
         graphics::draw(
             ctx,
-            &graphics::Text::new(format!("Ping: {:.2}", self.ping / 2.0)),
+            &graphics::Text::new(format!("Ping (ms): {:.2}", self.ping / 2.0)),
             graphics::DrawParam::default().dest([30.0, 250.0]),
         )?;
         graphics::draw(
             ctx,
-            &graphics::Text::new(format!("Current Frame: {:.2}", self.current_frame)),
+            &graphics::Text::new(format!("Current Frame: f{:.2}", self.current_frame)),
             graphics::DrawParam::default().dest([30.0, 300.0]),
         )?;
         graphics::draw(
@@ -259,6 +278,23 @@ impl EventHandler for RollbackRunner {
                     * 60.0
             )),
             graphics::DrawParam::default().dest([30.0, 400.0]),
+        )?;
+
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!(
+                "Faked Network Delay (ms): {:.2}",
+                self.client.delay.as_millis()
+            )),
+            graphics::DrawParam::default().dest([300.0, 200.0]),
+        )?;
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!(
+                "Faked Packet Loss (%): {:.2}",
+                self.client.packet_loss * 100.0
+            )),
+            graphics::DrawParam::default().dest([300.0, 250.0]),
         )?;
         graphics::present(ctx)
     }
