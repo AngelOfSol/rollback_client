@@ -19,7 +19,7 @@ pub struct GameInput {
     pub x_axis: i32,
 }
 
-pub type PlayerInputHistory = [GameInput];
+pub type PlayerInputHistory = GameInput;
 
 impl GameState {
     pub fn new(ctx: &mut Context) -> Self {
@@ -36,15 +36,15 @@ impl GameState {
     }
 
     pub fn update(&mut self, p1: &PlayerInputHistory, p2: &PlayerInputHistory) {
-        if p1[0].x_axis > 0 {
+        if p1.x_axis > 0 {
             self.p1.x += 4;
-        } else if p1[0].x_axis < 0 {
+        } else if p1.x_axis < 0 {
             self.p1.x -= 4;
         }
 
-        if p2[0].x_axis > 0 {
+        if p2.x_axis > 0 {
             self.p2.x += 4;
-        } else if p2[0].x_axis < 0 {
+        } else if p2.x_axis < 0 {
             self.p2.x -= 4;
         }
     }

@@ -1,4 +1,5 @@
 use crate::game::{GameInput, GameState};
+use crate::input_history::InputHistory;
 use crate::net_client::TestNetClient;
 use ggez::event::EventHandler;
 use ggez::event::{KeyCode, KeyMods};
@@ -9,8 +10,8 @@ use std::time::Instant;
 
 pub struct RollbackRunner {
     current_state: GameState,
-    p1_input: Vec<GameInput>,
-    p2_input: Vec<GameInput>,
+    p1_input: InputHistory<GameInput>,
+    p2_input: InputHistory<GameInput>,
     input_state: i32,
     player1: bool,
     client: TestNetClient,
@@ -26,12 +27,19 @@ struct InputTiming {
     frame: i32,
     input: GameInput,
 }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct InputData {
+    frame: i32,
+    input: InputTiming,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 enum RollbackPacket {
     Ping(u128),
     Pong(u128),
-    Input(InputTiming),
+    Input(InputData),
+    Request(i32),
+    Provide(InputTiming),
 }
 
 impl RollbackRunner {
@@ -39,8 +47,8 @@ impl RollbackRunner {
         // Load/create resources such as images here.
         RollbackRunner {
             current_state: GameState::new(ctx),
-            p1_input: vec![GameInput { x_axis: 0 }],
-            p2_input: vec![GameInput { x_axis: 0 }],
+            p1_input: InputHistory::new(GameInput { x_axis: 0 }),
+            p2_input: InputHistory::new(GameInput { x_axis: 0 }),
             input_state: 0,
             player1,
             client,
@@ -53,8 +61,8 @@ impl RollbackRunner {
     }
 }
 
-fn ping_in_frames(value: f32) -> i32 {
-    (value / 16.0) as i32 + 1
+fn ping_in_delay(value: f32) -> i32 {
+    ((value + 3.0) / 32.0).ceil() as i32
 }
 
 impl EventHandler for RollbackRunner {
@@ -66,6 +74,12 @@ impl EventHandler for RollbackRunner {
         } else {
             (&mut self.p2_input, &mut self.p1_input)
         };
+        if !net_player.has_input(self.current_frame) {
+            self.client
+                .send(&RollbackPacket::Request(self.current_frame))
+                .unwrap();
+            dbg!("missing net sides ");
+        }
 
         'poll_packets: loop {
             match self.client.recv::<RollbackPacket>() {
@@ -79,10 +93,21 @@ impl EventHandler for RollbackRunner {
                     }
                     RollbackPacket::Input(input) => {
                         // this is for calculating how many frames to skip
-
                         self.skip_frames =
-                            self.current_frame - (input.frame + ping_in_frames(self.ping));
-                        self.recieved_inputs.push(input.clone());
+                            self.current_frame - (input.frame + ping_in_delay(self.ping));
+                        self.recieved_inputs.push(input.input);
+                    }
+
+                    RollbackPacket::Request(frame) => {
+                        if let Some(input) = local_player.get_input(frame) {
+                            let input = input.clone();
+                            self.client
+                                .send(&RollbackPacket::Provide(InputTiming { frame, input }))
+                                .unwrap();
+                        }
+                    }
+                    RollbackPacket::Provide(requested) => {
+                        self.recieved_inputs.push(requested);
                     }
                 },
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break 'poll_packets,
@@ -91,15 +116,25 @@ impl EventHandler for RollbackRunner {
                 }
             }
         }
+
         if ggez::timer::check_update_time(ctx, 60) {
             if self.skip_frames > 0 {
                 self.skip_frames -= 1;
                 dbg!("skipped a frame!");
             } else {
+                local_player.add_local_input(
+                    self.current_frame,
+                    GameInput {
+                        x_axis: self.input_state,
+                    },
+                );
                 self.client
-                    .send(&RollbackPacket::Input(InputTiming {
-                        input: GameInput {
-                            x_axis: self.input_state,
+                    .send(&RollbackPacket::Input(InputData {
+                        input: InputTiming {
+                            input: GameInput {
+                                x_axis: self.input_state,
+                            },
+                            frame: self.current_frame,
                         },
                         frame: self.current_frame,
                     }))
@@ -109,23 +144,24 @@ impl EventHandler for RollbackRunner {
                 self.client
                     .send(&RollbackPacket::Ping(current_time))
                     .unwrap();
-                local_player.insert(
-                    0,
-                    GameInput {
-                        x_axis: self.input_state,
-                    },
-                );
-                net_player.insert(0, GameInput { x_axis: 0 });
 
-                if !self.p1_input.is_empty() && !self.p2_input.is_empty() {
+                self.recieved_inputs.sort_by(|l, r| l.frame.cmp(&r.frame));
+                for input in self.recieved_inputs.drain(..) {
+                    net_player.add_network_input(input.frame, input.input);
+                }
+
+                if self.p1_input.has_input(self.current_frame)
+                    && self.p2_input.has_input(self.current_frame)
+                {
                     self.current_state.update(
-                        &self.p1_input[0..10.min(self.p1_input.len())],
-                        &self.p2_input[0..10.min(self.p2_input.len())],
+                        &self.p1_input.get_input(self.current_frame).unwrap(),
+                        &self.p2_input.get_input(self.current_frame).unwrap(),
                     );
                     self.current_frame += 1;
                 }
             }
         }
+
         self.client.send_queued()?;
         Ok(())
     }

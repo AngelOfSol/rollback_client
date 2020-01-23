@@ -1,11 +1,10 @@
 mod game;
+mod input_history;
 mod net_client;
 mod rollback_runner;
 
 use ggez::event;
 use ggez::ContextBuilder;
-
-use serde::{Deserialize, Serialize};
 
 fn main() -> std::io::Result<()> {
     let mut input = String::new();
