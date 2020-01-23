@@ -16,19 +16,6 @@ pub struct NetClient {
 }
 
 impl NetClient {
-    /*
-    pub fn new<A: ToSocketAddrs + Copy>(addr: A) -> io::Result<Self> {
-        let udp_socket = UdpSocket::bind(addr)?;
-        udp_socket.set_nonblocking(true)?;
-        let tcp_listener = TcpListener::bind(addr)?;
-        Ok(NetClient {
-            udp_socket,
-            buffer: [0; 128],
-            tcp_listener,
-            tcp_stream: None,
-        })
-    }*/
-
     pub fn send<T: Serialize>(&self, data: &T) -> io::Result<usize> {
         self.udp_socket.send(&bincode::serialize(data).map_err(|_| {
             io::Error::new(
