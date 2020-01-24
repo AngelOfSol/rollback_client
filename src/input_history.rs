@@ -1,60 +1,69 @@
 #[derive(Debug)]
 pub struct InputHistory<T> {
-    front_frame: i32,
+    front_frame: usize,
     data: Vec<T>,
 }
 
-impl<T: Clone> InputHistory<T> {
-    pub fn new(x: T) -> Self {
+impl<T> InputHistory<T> {
+    pub fn new() -> Self {
         Self {
             front_frame: 0,
-            data: vec![x; 20],
+            data: vec![],
         }
     }
 
-    fn adjust_frame(&self, frame: i32) -> usize {
-        (frame - self.front_frame) as usize
+    fn adjust_frame(&self, frame: usize) -> usize {
+        frame - self.front_frame
     }
-    fn adjust_index(&self, idx: usize) -> i32 {
-        idx as i32 + self.front_frame
+    fn adjust_index(&self, idx: usize) -> usize {
+        idx + self.front_frame
     }
 
-    pub fn add_local_input(&mut self, frame: i32, data: T) {
+    pub fn add_local_input(&mut self, frame: usize, data: T) -> usize {
         let relative_frame = self.adjust_frame(frame);
-        if relative_frame >= self.data.len() {
+        if relative_frame == self.data.len() {
             self.data.push(data);
+            frame
+        } else if relative_frame > self.data.len() {
+            self.data.push(data);
+            self.front_frame + self.data.len() - 1
         } else {
-            //panic!("should not be ")
+            frame
         }
     }
 
-    pub fn add_network_input(&mut self, frame: i32, data: T) {
+    pub fn add_network_input(&mut self, frame: usize, data: T) {
         let relative_frame = self.adjust_frame(frame);
         if relative_frame == self.data.len() {
             self.data.push(data);
         } else if relative_frame > self.data.len() {
-            // do nothing because we can't ues the data anyway
+            dbg!("threw data out");
+            dbg!(relative_frame);
+            dbg!(self.data.len());
         } else {
-            //panic!("should not be ")
         }
     }
-    pub fn has_input(&self, frame: i32) -> bool {
+    pub fn has_input(&self, frame: usize) -> bool {
         self.get_input(frame).is_some()
     }
-    pub fn get_input(&self, frame: i32) -> Option<&T> {
+    pub fn get_input(&self, frame: usize) -> Option<&T> {
         let relative_frame = self.adjust_frame(frame);
         self.data.get(relative_frame)
     }
 
-    pub fn get_inputs(&self, frame: i32, amt: usize) -> (i32, &[T]) {
+    pub fn last_input(&self) -> usize {
+        self.front_frame + self.data.len().checked_sub(1).unwrap_or(0)
+    }
+
+    pub fn get_inputs(&self, frame: usize, amt: usize) -> &[T] {
         let frame = self.adjust_frame(frame);
         let end_idx = self.data.len().min(frame + 1);
         let start_idx = end_idx.checked_sub(amt).unwrap_or(0);
 
-        (self.adjust_index(start_idx), &self.data[start_idx..end_idx])
+        &self.data[start_idx..end_idx]
     }
 
-    pub fn clean(&mut self, frame: i32) {
+    pub fn clean(&mut self, frame: usize) {
         let front_elements = self.adjust_frame(frame).checked_sub(20);
 
         if let Some(front_elements) = front_elements {
