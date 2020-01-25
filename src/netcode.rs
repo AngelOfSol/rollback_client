@@ -1,9 +1,9 @@
-use crate::input_history::InputHistory;
+use crate::input_history::{LocalHistory, NetworkedHistory};
 use serde::{Deserialize, Serialize};
 
 pub struct NetcodeClient<T> {
-    local_player: InputHistory<T>,
-    net_player: InputHistory<T>,
+    local_player: LocalHistory<T>,
+    net_player: NetworkedHistory<T>,
     current_frame: usize,
     held_input_count: usize,
     skip_frames: usize,
@@ -34,8 +34,8 @@ pub enum Packet<T> {
 impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
     pub fn new(held_input_count: usize) -> Self {
         Self {
-            local_player: InputHistory::new(),
-            net_player: InputHistory::new(),
+            local_player: LocalHistory::new(),
+            net_player: NetworkedHistory::new(),
             current_frame: 0,
             held_input_count,
             ping: 0.0,
@@ -46,6 +46,7 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
         }
     }
     pub fn required_delay(&self) -> usize {
+        // TODO pass in ms per frame
         ((self.ping + 3.0) / 32.0).ceil() as usize
     }
     pub fn input_delay(&self) -> usize {
@@ -56,6 +57,7 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
     }
 
     fn extra_input_delay(&self) -> usize {
+        // TODO figure out how we wanna calc this field
         // was 3
         self.TEMP_additional_input_delay
     }
@@ -64,51 +66,47 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
     }
 
     //TODO turn this into an option
-    pub fn handle_local_input(&mut self, data: T) -> Packet<T> {
+    pub fn handle_local_input(&mut self, data: T) -> Option<Packet<T>> {
         if !self.local_player.has_input(self.delayed_current_frame()) {
             // CORRECT THIS INPUT CHECKING
             // we want to send over teh most recent x inputs
             // and if we dont have enough inputs to send, tahts ok, but we dont wanna send them erroneously
-            let target_input = self
-                .local_player
-                .add_local_input(self.delayed_current_frame(), data);
+            let input_frame = self.local_player.add_input(data);
             let buffer_size = self.TEMP_buffer_size;
-            let (frame, size) = if target_input.checked_sub(buffer_size - 1).is_some() {
-                (target_input - (buffer_size - 1), buffer_size)
+            let (frame, size) = if input_frame.checked_sub(buffer_size - 1).is_some() {
+                (input_frame - (buffer_size - 1), buffer_size)
             } else {
-                (target_input, 1)
+                (input_frame, 1)
             };
-            Packet::Inputs(
+            Some(Packet::Inputs(
                 self.current_frame,
                 frame,
                 self.local_player
-                    .get_inputs(target_input, size)
+                    .get_inputs(input_frame, size)
                     .iter()
                     .cloned()
                     .collect(),
-            )
+            ))
         } else {
-            Packet::Inputs(self.current_frame, self.delayed_current_frame(), vec![])
+            None
         }
     }
 
     pub fn handle_net_input(&mut self, frame: usize, data: T) {
         if !self.net_player.has_input(frame) {
-            self.net_player.add_network_input(frame, data);
+            self.net_player.add_input(frame, data);
         } else {
         }
     }
 
     pub fn handle_packet(&mut self, packet: Packet<T>) -> Option<Packet<T>> {
         match packet {
-            Packet::Inputs(send_on_frame, start_frame, inputs) => {
+            Packet::Inputs(sent_on_frame, start_frame, inputs) => {
                 self.skip_frames = self
                     .current_frame
-                    .checked_sub(send_on_frame + self.required_delay())
+                    .checked_sub(sent_on_frame + self.required_delay())
                     .unwrap_or(0);
-                // todo fix sending multiple frames of data worth over
                 for (idx, input) in inputs.into_iter().enumerate() {
-                    //self.recieved_data.push((start_frame + idx, input));
                     self.handle_net_input(start_frame + idx, input);
                 }
                 None
@@ -123,7 +121,7 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
             )),
             Packet::Provide(frame, inputs) => {
                 for (idx, input) in inputs.into_iter().enumerate() {
-                    self.net_player.add_network_input(frame + idx, input);
+                    self.net_player.add_input(frame + idx, input);
                 }
                 None
             }
@@ -138,6 +136,14 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
         } else if self.local_player.has_input(self.current_frame)
             && self.net_player.has_input(self.current_frame)
         {
+            if self.current_frame % self.held_input_count == 0 {
+                let clear_target = self
+                    .current_frame
+                    .checked_sub(self.held_input_count)
+                    .unwrap_or(0);
+                self.local_player.clean(clear_target);
+                self.net_player.clean(clear_target);
+            }
             let res = Action::RunInput(InputSet {
                 local: self
                     .local_player

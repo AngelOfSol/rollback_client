@@ -88,13 +88,11 @@ impl EventHandler for RollbackRunner {
 
         let fps = 60;
         if ggez::timer::check_update_time(ctx, fps) {
-            self.client
-                .send(&RollbackPacket::Netcode(
-                    self.delay_client.handle_local_input(GameInput {
-                        x_axis: self.input_state,
-                    }),
-                ))
-                .unwrap();
+            if let Some(packet) = self.delay_client.handle_local_input(GameInput {
+                x_axis: self.input_state,
+            }) {
+                self.client.send(&RollbackPacket::Netcode(packet)).unwrap();
+            }
 
             let start_time = Instant::now();
             let current_time = (start_time - self.start_time).as_millis();
