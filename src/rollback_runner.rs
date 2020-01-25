@@ -56,6 +56,7 @@ impl EventHandler for RollbackRunner {
         let start_time = Instant::now();
         let current_time = (start_time - self.start_time).as_millis();
 
+        let mut count = 0;
         'poll_packets: loop {
             match self.client.recv::<RollbackPacket>() {
                 Ok(packet) => match packet {
@@ -78,6 +79,10 @@ impl EventHandler for RollbackRunner {
                 Err(e) => {
                     panic!("{:?}", e);
                 }
+            }
+            count += 1;
+            if count % 20 == 0 {
+                dbg!(count);
             }
         }
 
@@ -112,68 +117,6 @@ impl EventHandler for RollbackRunner {
                     }
                 }
             }
-            /*
-            if self.skip_frames > 0 {
-                self.skip_frames -= 1;
-            } else {
-                if !local_player.has_input(self.current_frame + delay) {
-                    local_player.add_local_input(
-                        self.current_frame + delay,
-                        GameInput {
-                            x_axis: self.input_state,
-                        },
-                    );
-                }
-                // adjust the amount of extra data based on the delay
-                let (start_frame, data) =
-                    local_player.get_inputs(self.current_frame + delay, 5.max(delay as usize + 1));
-                let inputs = data
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, input)| InputTiming {
-                        frame: idx as i32 + start_frame,
-                        input: input.clone(),
-                    })
-                    .collect();
-                self.client
-                    .send(&RollbackPacket::Input(InputData {
-                        input: inputs,
-                        frame: self.current_frame + delay,
-                    }))
-                    .unwrap();
-                let start_time = Instant::now();
-                let current_time = (start_time - self.start_time).as_millis();
-                self.client
-                    .send(&RollbackPacket::Ping(current_time))
-                    .unwrap();
-
-                self.recieved_inputs.sort_by(|l, r| l.frame.cmp(&r.frame));
-                for input in self.recieved_inputs.drain(..) {
-                    net_player.add_network_input(input.frame, input.input);
-                }
-                if !net_player.has_input(self.current_frame) {
-                    self.client
-                        .send(&RollbackPacket::Request(self.current_frame))
-                        .unwrap();
-                }
-
-                if self.p1_input.has_input(self.current_frame)
-                    && self.p2_input.has_input(self.current_frame)
-                {
-                    self.current_state.update(
-                        &self.p1_input.get_input(self.current_frame).unwrap(),
-                        &self.p2_input.get_input(self.current_frame).unwrap(),
-                    );
-                    self.current_frame += 1;
-
-                    self.p1_input.clean(self.current_frame);
-                    self.p2_input.clean(self.current_frame);
-                    self.dropped.push(false);
-                } else {
-                    self.dropped.push(true);
-                }
-                self.dropped.remove(0);
-            }*/
         }
 
         self.client.send_queued()?;
@@ -193,14 +136,22 @@ impl EventHandler for RollbackRunner {
                 _ => 0,
             };
             match keycode {
-                KeyCode::D => self.client.delay += std::time::Duration::from_millis(5),
+                KeyCode::D => self.client.delay += std::time::Duration::from_millis(10),
                 KeyCode::A => {
-                    if self.client.delay >= std::time::Duration::from_millis(5) {
-                        self.client.delay -= std::time::Duration::from_millis(5)
+                    if self.client.delay >= std::time::Duration::from_millis(10) {
+                        self.client.delay -= std::time::Duration::from_millis(10)
                     }
                 }
-                KeyCode::W => self.client.packet_loss += 0.02,
-                KeyCode::S => self.client.packet_loss -= 0.02,
+                KeyCode::W => self.client.packet_loss += 0.05,
+                KeyCode::S => self.client.packet_loss -= 0.05,
+                KeyCode::E => self.delay_client.TEMP_buffer_size += 1,
+                KeyCode::Q => {
+                    self.delay_client.TEMP_buffer_size -= 1;
+                    self.delay_client.TEMP_buffer_size = self.delay_client.TEMP_buffer_size.max(1)
+                }
+
+                KeyCode::Z => self.delay_client.TEMP_additional_input_delay -= 1,
+                KeyCode::C => self.delay_client.TEMP_additional_input_delay += 1,
                 _ => (),
             };
 
@@ -277,6 +228,22 @@ impl EventHandler for RollbackRunner {
                 self.client.packet_loss * 100.0
             )),
             graphics::DrawParam::default().dest([300.0, 250.0]),
+        )?;
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!(
+                "Buffer Size (f): {}",
+                self.delay_client.TEMP_buffer_size,
+            )),
+            graphics::DrawParam::default().dest([300.0, 300.0]),
+        )?;
+        graphics::draw(
+            ctx,
+            &graphics::Text::new(format!(
+                "Rerequest Rate (%): {:.2}",
+                self.delay_client.TEMP_rerequest_rate * 100.0
+            )),
+            graphics::DrawParam::default().dest([300.0, 350.0]),
         )?;
         graphics::present(ctx)
     }
