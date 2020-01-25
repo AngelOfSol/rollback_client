@@ -1,6 +1,6 @@
 use crate::game::{GameInput, GameState};
 use crate::net_client::TestNetClient;
-use crate::netcode::{self, Action, NetcodeClient};
+use crate::netcode::{self, NetcodeClient};
 use ggez::event::EventHandler;
 use ggez::event::{KeyCode, KeyMods};
 use ggez::{graphics, Context, GameResult};
@@ -100,20 +100,20 @@ impl EventHandler for RollbackRunner {
                 .send(&RollbackPacket::Ping(current_time))
                 .unwrap();
 
-            match self.delay_client.idle() {
-                Action::DoNothing => {}
-                Action::Request(packet) => {
-                    self.client.send(&RollbackPacket::Netcode(packet)).unwrap();
+            let (client, game_state, player1) = (
+                &mut self.delay_client,
+                &mut self.current_state,
+                self.player1,
+            );
+
+            if let Some(packet) = client.update(|input| {
+                if player1 {
+                    game_state.update(&input.local.last().unwrap(), &input.net.last().unwrap());
+                } else {
+                    game_state.update(&input.net.last().unwrap(), &input.local.last().unwrap());
                 }
-                Action::RunInput(input) => {
-                    if self.player1 {
-                        self.current_state
-                            .update(&input.local.last().unwrap(), &input.net.last().unwrap());
-                    } else {
-                        self.current_state
-                            .update(&input.net.last().unwrap(), &input.local.last().unwrap());
-                    }
-                }
+            }) {
+                self.client.send(&RollbackPacket::Netcode(packet)).unwrap();
             }
         }
 

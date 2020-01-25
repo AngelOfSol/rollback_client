@@ -18,12 +18,6 @@ pub struct InputSet<'a, T> {
     pub net: &'a [T],
 }
 
-pub enum Action<'a, T> {
-    DoNothing,
-    Request(Packet<T>),
-    RunInput(InputSet<'a, T>),
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Packet<T> {
     Inputs(usize, usize, Vec<T>),
@@ -92,10 +86,9 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
         }
     }
 
-    pub fn handle_net_input(&mut self, frame: usize, data: T) {
+    fn handle_net_input(&mut self, frame: usize, data: T) {
         if !self.net_player.has_input(frame) {
             self.net_player.add_input(frame, data);
-        } else {
         }
     }
 
@@ -128,11 +121,14 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
         }
     }
 
-    pub fn idle(&mut self) -> Action<T> {
+    pub fn update<'a, F: FnMut(InputSet<'a, T>) -> ()>(
+        &'a mut self,
+        mut update_game: F,
+    ) -> Option<Packet<T>> {
         let TEMP_iir_duration = 600.0;
         if self.skip_frames > 0 {
             self.skip_frames -= 1;
-            Action::DoNothing
+            None
         } else if self.local_player.has_input(self.current_frame)
             && self.net_player.has_input(self.current_frame)
         {
@@ -144,7 +140,8 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
                 self.local_player.clean(clear_target);
                 self.net_player.clean(clear_target);
             }
-            let res = Action::RunInput(InputSet {
+
+            update_game(InputSet {
                 local: self
                     .local_player
                     .get_inputs(self.current_frame, self.held_input_count),
@@ -152,15 +149,17 @@ impl<T: Clone + std::fmt::Debug + Default> NetcodeClient<T> {
                     .net_player
                     .get_inputs(self.current_frame, self.held_input_count),
             });
+
             self.current_frame += 1;
             self.TEMP_rerequest_rate =
                 self.TEMP_rerequest_rate * (TEMP_iir_duration - 1.0) / TEMP_iir_duration;
-            res
+
+            None
         } else {
             self.TEMP_rerequest_rate = self.TEMP_rerequest_rate * (TEMP_iir_duration - 1.0)
                 / TEMP_iir_duration
                 + 1.0 / TEMP_iir_duration;
-            Action::Request(Packet::Request(self.current_frame))
+            Some(Packet::Request(self.current_frame))
         }
     }
 }
