@@ -62,7 +62,7 @@ impl RollbackRunner {
         // Load/create resources such as images here.
         RollbackRunner {
             current_state: GameState::new(ctx),
-            delay_client: NetcodeClient::new(10),
+            delay_client: NetcodeClient::new(100),
             input_state: 0,
             player1,
             client,
@@ -110,7 +110,7 @@ impl EventHandler for RollbackRunner {
             }
         }
 
-        let fps = 60;
+        let fps = if self.player1 { 60 } else { 60 };
         if ggez::timer::check_update_time(ctx, fps) {
             if let Some(packet) = self.delay_client.handle_local_input(GameInput {
                 x_axis: self.input_state,

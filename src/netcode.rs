@@ -33,7 +33,9 @@ pub enum Packet<Input> {
     Provide(usize, Vec<Input>),
 }
 
-impl<Input: Clone + Default + PartialEq, GameState> NetcodeClient<Input, GameState> {
+impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::Debug>
+    NetcodeClient<Input, GameState>
+{
     pub fn new(held_input_count: usize) -> Self {
         Self {
             local_player: LocalHistory::new(),
@@ -42,10 +44,10 @@ impl<Input: Clone + Default + PartialEq, GameState> NetcodeClient<Input, GameSta
             held_input_count,
             skip_frames: 0,
             packet_buffer_size: 10,
-            input_delay: 7,
-            network_delay: 1,
+            input_delay: 1,
+            network_delay: 0,
             saved_rollback_states: HashMap::new(),
-            allowed_rollback: 0,
+            allowed_rollback: 9,
             rollback_to: None,
         }
     }
@@ -97,7 +99,14 @@ impl<Input: Clone + Default + PartialEq, GameState> NetcodeClient<Input, GameSta
                     state.is_some(),
                     "Misprediction should have a corrseponding save state."
                 );
-                self.rollback_to = Some((frame, state.unwrap()));
+                if let Some((old_frame, _)) = self.rollback_to {
+                    if old_frame > frame {
+                        self.rollback_to = Some((frame, state.unwrap()));
+                    } else {
+                    }
+                } else {
+                    self.rollback_to = Some((frame, state.unwrap()));
+                }
             }
         }
     }
@@ -105,13 +114,10 @@ impl<Input: Clone + Default + PartialEq, GameState> NetcodeClient<Input, GameSta
     pub fn handle_packet(&mut self, packet: Packet<Input>) -> Option<Packet<Input>> {
         match packet {
             Packet::Inputs(sent_on_frame, start_frame, inputs) => {
-                dbg!("FORE THIS FRAME");
                 self.skip_frames = self
                     .current_frame
-                    .checked_sub(sent_on_frame + dbg!(self.network_delay))
+                    .checked_sub(sent_on_frame + self.network_delay)
                     .unwrap_or(0);
-                dbg!(sent_on_frame);
-                dbg!(self.current_frame());
                 for (idx, input) in inputs.into_iter().enumerate() {
                     let frame = start_frame + idx;
                     self.handle_net_input(frame, input);
@@ -137,10 +143,7 @@ impl<Input: Clone + Default + PartialEq, GameState> NetcodeClient<Input, GameSta
         game: &mut Game,
     ) -> Option<Packet<Input>> {
         if let Some((rollback_frame, state)) = self.rollback_to.take() {
-            dbg!("rolling back");
             game.load_state(state);
-
-            dbg!(self.current_frame - rollback_frame);
 
             for rollback_current_frame in rollback_frame..self.current_frame {
                 assert!(
@@ -148,9 +151,16 @@ impl<Input: Clone + Default + PartialEq, GameState> NetcodeClient<Input, GameSta
                     "Can't rollback through empty data."
                 );
 
+                if self.net_player.is_predicted_input(rollback_current_frame) {
+                    self.saved_rollback_states
+                        .insert(rollback_current_frame, game.save_state());
+                    self.net_player.repredict(rollback_current_frame);
+                }
+
                 let (range, net_player_inputs) = self
                     .net_player
                     .get_inputs(rollback_current_frame, self.held_input_count);
+
                 assert_eq!(range.last, rollback_current_frame, "The last frame of input in the queue, should match the currently rollbacking frame.");
 
                 game.advance_frame(InputSet {
@@ -217,6 +227,7 @@ impl<Input: Clone + Default + PartialEq, GameState> NetcodeClient<Input, GameSta
                         .get_inputs(self.current_frame, self.held_input_count)
                         .1,
                 });
+                self.current_frame += 1;
 
                 None
             } else {

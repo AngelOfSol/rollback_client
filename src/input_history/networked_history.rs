@@ -141,13 +141,29 @@ impl<T: Default + Clone + PartialEq> NetworkedHistory<T> {
         }
     }
 
+    pub fn repredict(&mut self, frame: usize) {
+        let frame = self.adjust_frame(frame).unwrap();
+        let data = frame
+            .checked_sub(1)
+            .and_then(|frame| self.data.get(frame))
+            .cloned()
+            .unwrap_or_default();
+
+        assert_eq!(self.canon[frame], Canon::Predicted);
+        self.data[frame] = data;
+    }
+
     pub fn clean(&mut self, frame: usize) {
         let front_elements = self.adjust_frame(frame);
 
         if let Some(front_elements) = front_elements {
             if front_elements > 0 {
                 self.data.drain(0..front_elements);
-                self.canon.drain(0..front_elements);
+                let test = self
+                    .canon
+                    .drain(0..front_elements)
+                    .all(|item| item == Canon::Canon);
+                assert!(test, "dropped off inputs that were predicted or empty");
                 self.front_frame = frame;
             }
         }
