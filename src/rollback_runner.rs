@@ -10,10 +10,11 @@ use std::time::Instant;
 
 pub struct RollbackRunner {
     current_state: GameState,
-    delay_client: NetcodeClient<GameInput>,
+    delay_client: NetcodeClient<GameInput, GameState>,
     input_state: i32,
     player1: bool,
     client: TestNetClient,
+    ping: f32,
     start_time: Instant,
     dropped: Vec<bool>,
 }
@@ -36,6 +37,26 @@ enum RollbackPacket {
     Netcode(netcode::Packet<GameInput>),
 }
 
+impl<'a> netcode::RollbackableGameState for (&'a mut GameState, bool) {
+    type Input = GameInput;
+    type SavedState = GameState;
+    fn advance_frame(&mut self, input: netcode::InputSet<'_, Self::Input>) {
+        if self.1 {
+            self.0
+                .update(&input.local.last().unwrap(), &input.net.last().unwrap());
+        } else {
+            self.0
+                .update(&input.net.last().unwrap(), &input.local.last().unwrap());
+        }
+    }
+    fn save_state(&self) -> Self::SavedState {
+        self.0.clone()
+    }
+    fn load_state(&mut self, load: Self::SavedState) {
+        *self.0 = load;
+    }
+}
+
 impl RollbackRunner {
     pub fn new(ctx: &mut Context, player1: bool, client: TestNetClient) -> RollbackRunner {
         // Load/create resources such as images here.
@@ -45,6 +66,7 @@ impl RollbackRunner {
             input_state: 0,
             player1,
             client,
+            ping: 0.0,
             start_time: Instant::now(),
             dropped: vec![false; 300],
         }
@@ -65,8 +87,10 @@ impl EventHandler for RollbackRunner {
                     }
                     RollbackPacket::Pong(pong_time) => {
                         let ping_time = current_time - pong_time;
-                        self.delay_client.ping =
-                            self.delay_client.ping * 0.9 + ping_time as f32 * 0.1;
+                        //
+                        self.ping = self.ping * 0.9 + ping_time as f32 * 0.1;
+                        self.delay_client.network_delay =
+                            ((self.ping + 3.0) / 32.0).ceil() as usize;
                     }
                     RollbackPacket::Netcode(input) => {
                         // this is for calculating how many frames to skip
@@ -106,13 +130,7 @@ impl EventHandler for RollbackRunner {
                 self.player1,
             );
 
-            if let Some(packet) = client.update(|input| {
-                if player1 {
-                    game_state.update(&input.local.last().unwrap(), &input.net.last().unwrap());
-                } else {
-                    game_state.update(&input.net.last().unwrap(), &input.local.last().unwrap());
-                }
-            }) {
+            if let Some(packet) = client.update(&mut (game_state, player1)) {
                 self.client.send(&RollbackPacket::Netcode(packet)).unwrap();
             }
         }
@@ -142,16 +160,16 @@ impl EventHandler for RollbackRunner {
                 }
                 KeyCode::W => self.client.packet_loss += 0.05,
                 KeyCode::S => self.client.packet_loss -= 0.05,
-                KeyCode::E => self.delay_client.TEMP_buffer_size += 1,
-                KeyCode::Q => {
-                    self.delay_client.TEMP_buffer_size -= 1;
-                    self.delay_client.TEMP_buffer_size = self.delay_client.TEMP_buffer_size.max(1)
-                }
+                KeyCode::E => self.delay_client.allowed_rollback += 1,
+                KeyCode::Q => self.delay_client.allowed_rollback -= 1,
 
-                KeyCode::Z => self.delay_client.TEMP_additional_input_delay -= 1,
-                KeyCode::C => self.delay_client.TEMP_additional_input_delay += 1,
+                KeyCode::Z => self.delay_client.input_delay -= 1,
+                KeyCode::C => self.delay_client.input_delay += 1,
                 _ => (),
             };
+
+            self.delay_client.packet_buffer_size =
+                10.max(self.delay_client.input_delay + self.delay_client.allowed_rollback);
 
             self.client.packet_loss = self.client.packet_loss.max(0.0).min(1.0);
             self.client.delay = self
@@ -176,12 +194,12 @@ impl EventHandler for RollbackRunner {
         self.current_state.draw(ctx, 100.0)?;
         graphics::draw(
             ctx,
-            &graphics::Text::new(format!("Delay: {:.2}f", self.delay_client.input_delay())),
+            &graphics::Text::new(format!("Delay: {:.2}f", self.delay_client.input_delay)),
             graphics::DrawParam::default().dest([30.0, 200.0]),
         )?;
         graphics::draw(
             ctx,
-            &graphics::Text::new(format!("Ping (ms): {:.2}", self.delay_client.ping / 2.0)),
+            &graphics::Text::new(format!("Ping (ms): {:.2}", self.ping / 2.0)),
             graphics::DrawParam::default().dest([30.0, 250.0]),
         )?;
         graphics::draw(
@@ -195,18 +213,16 @@ impl EventHandler for RollbackRunner {
         graphics::draw(
             ctx,
             &graphics::Text::new(format!(
-                "Dropped Frame (%): {:.2}",
-                self.dropped.iter().filter(|x| **x).count() as f32 / self.dropped.len() as f32
-                    * 100.0
+                "Network Delay: {:.2}f",
+                self.delay_client.network_delay
             )),
             graphics::DrawParam::default().dest([30.0, 350.0]),
         )?;
         graphics::draw(
             ctx,
             &graphics::Text::new(format!(
-                "Dropped Frame (per second): {:.0}",
-                self.dropped.iter().filter(|x| **x).count() as f32 / self.dropped.len() as f32
-                    * 60.0
+                "Allowed Rollback: {:.0}f",
+                self.delay_client.allowed_rollback
             )),
             graphics::DrawParam::default().dest([30.0, 400.0]),
         )?;
@@ -231,17 +247,9 @@ impl EventHandler for RollbackRunner {
             ctx,
             &graphics::Text::new(format!(
                 "Buffer Size (f): {}",
-                self.delay_client.TEMP_buffer_size,
+                self.delay_client.packet_buffer_size,
             )),
             graphics::DrawParam::default().dest([300.0, 300.0]),
-        )?;
-        graphics::draw(
-            ctx,
-            &graphics::Text::new(format!(
-                "Rerequest Rate (%): {:.2}",
-                self.delay_client.TEMP_rerequest_rate * 100.0
-            )),
-            graphics::DrawParam::default().dest([300.0, 350.0]),
         )?;
         graphics::present(ctx)
     }

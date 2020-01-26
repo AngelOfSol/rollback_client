@@ -1,3 +1,5 @@
+use super::InputRange;
+
 #[derive(Debug)]
 pub struct LocalHistory<T> {
     front_frame: usize,
@@ -15,6 +17,9 @@ impl<T: Default + Clone> LocalHistory<T> {
     fn adjust_frame(&self, frame: usize) -> Option<usize> {
         frame.checked_sub(self.front_frame)
     }
+    fn adjust_idx(&self, idx: usize) -> usize {
+        idx + self.front_frame
+    }
 
     pub fn add_input(&mut self, data: T) -> usize {
         self.data.push(data);
@@ -27,12 +32,18 @@ impl<T: Default + Clone> LocalHistory<T> {
             .is_some()
     }
 
-    pub fn get_inputs(&self, frame: usize, amt: usize) -> &[T] {
+    pub fn get_inputs(&self, frame: usize, amt: usize) -> (InputRange, &[T]) {
         let frame = self.adjust_frame(frame).unwrap();
         let end_idx = self.data.len().min(frame + 1);
         let start_idx = end_idx.checked_sub(amt).unwrap_or(0);
 
-        &self.data[start_idx..end_idx]
+        (
+            InputRange {
+                first: self.adjust_idx(start_idx),
+                last: self.adjust_idx(end_idx).checked_sub(1).unwrap_or(0),
+            },
+            &self.data[start_idx..end_idx],
+        )
     }
 
     pub fn clean(&mut self, frame: usize) {
