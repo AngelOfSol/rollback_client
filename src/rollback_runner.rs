@@ -16,7 +16,6 @@ pub struct RollbackRunner {
     client: TestNetClient,
     ping: f32,
     start_time: Instant,
-    dropped: Vec<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -68,7 +67,6 @@ impl RollbackRunner {
             client,
             ping: 0.0,
             start_time: Instant::now(),
-            dropped: vec![false; 300],
         }
     }
 }
