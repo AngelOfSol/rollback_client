@@ -14,9 +14,15 @@ pub struct GameState {
     p2: Player,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GameInput {
     pub x_axis: i32,
+}
+
+impl Default for GameInput {
+    fn default() -> Self {
+        Self { x_axis: 0 }
+    }
 }
 
 pub type PlayerInputHistory = GameInput;

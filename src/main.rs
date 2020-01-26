@@ -1,6 +1,7 @@
 mod game;
 mod input_history;
 mod net_client;
+mod netcode;
 mod rollback_runner;
 
 use ggez::event;
@@ -8,11 +9,35 @@ use ggez::ContextBuilder;
 
 fn main() -> std::io::Result<()> {
     let mut input = String::new();
-    println!("Host (y/n)?");
+    println!("Host (Y/n)?");
     std::io::stdin().read_line(&mut input).unwrap();
 
-    let (client, player) = if input.trim() == "y" || input.trim().len() == 0 {
-        let mut client = net_client::TestNetClient::host("127.0.0.1:10800")?;
+    let (client, player) = if input.trim() == "y" || input.trim().is_empty() {
+        input.clear();
+        println!("Host local (Y/n)?");
+        std::io::stdin().read_line(&mut input).unwrap();
+
+        let ip = if input.trim() == "y" || input.trim().is_empty() {
+            "127.0.0.1:10800".to_owned()
+        } else {
+            let adapter = ipconfig::get_adapters()
+                .unwrap()
+                .into_iter()
+                .find(|x| x.friendly_name() == "Ethernet");
+
+            adapter
+                .and_then(|adapter| {
+                    adapter
+                        .ip_addresses()
+                        .iter()
+                        .find(|item| item.is_ipv4())
+                        .cloned()
+                })
+                .map(|ip| ip.to_string() + ":10800")
+                .unwrap_or("127.0.0.1:10800".to_owned())
+        };
+
+        let mut client = net_client::TestNetClient::host(&ip)?;
         println!("Input player (1/2):");
         input.clear();
         std::io::stdin().read_line(&mut input).unwrap();
@@ -21,7 +46,13 @@ fn main() -> std::io::Result<()> {
         // TODO its dropping the host player select packet.
         (client, selected_player)
     } else {
-        let mut client = net_client::TestNetClient::connect("127.0.0.1:10800")?;
+        println!("Input target ip (defaults to 127.0.0.1:10800):");
+        input.clear();
+        std::io::stdin().read_line(&mut input).unwrap();
+        if input.trim().is_empty() {
+            input = "127.0.0.1:10800".to_owned();
+        }
+        let mut client = net_client::TestNetClient::connect(&input.trim())?;
         let assigned_player: bool = client.read_tcp()?;
         (client, assigned_player)
     };
