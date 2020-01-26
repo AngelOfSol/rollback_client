@@ -210,7 +210,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                 .and_then(|frame| self.current_frame.checked_sub(*frame))
                 .unwrap_or(0)
                 < self.allowed_rollback
-                && self.current_frame > self.allowed_rollback * 60
+                && self.current_frame > self.allowed_rollback
             {
                 self.saved_rollback_states
                     .insert(self.current_frame, game.save_state());
