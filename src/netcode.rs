@@ -6,15 +6,33 @@ use std::collections::HashMap;
 // at least 4 bytes when 18 minutes of 60 FPS gameplay only needs a u16 (2 bytes)
 // TODO, add a bunch of functions to perform syncing of the clients, but not pass input back and forth
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+enum PlayerType {
+    Local,
+    Net,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub struct PlayerHandle(usize);
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+struct PlayerInfo {
+    player_type: PlayerType,
+    data_index: usize,
+    id: usize,
+}
+
 pub struct NetcodeClient<Input, GameState> {
-    local_player: LocalHistory<Input>,
-    net_player: NetworkedHistory<Input>,
+    local_players: Vec<LocalHistory<Input>>,
+    net_players: Vec<NetworkedHistory<Input>>,
     current_frame: usize,
     held_input_count: usize,
     skip_frames: usize,
     saved_rollback_states: HashMap<usize, GameState>,
     rollback_to: Option<(usize, GameState)>,
+    players: Vec<PlayerInfo>,
 
+    // TODO, ask for network_delay for each player
     pub network_delay: usize,
     pub input_delay: usize,
     pub allowed_rollback: usize,
@@ -27,7 +45,13 @@ pub struct InputSet<'a, Input> {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum Packet<Input> {
+struct Packet<Input> {
+    pub player_handle: PlayerHandle,
+    data: PacketData<Input>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum PacketData<Input> {
     Inputs(usize, usize, Vec<Input>),
     Request(usize),
     Provide(usize, Vec<Input>),
@@ -38,8 +62,8 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
 {
     pub fn new(held_input_count: usize) -> Self {
         Self {
-            local_player: LocalHistory::new(),
-            net_player: NetworkedHistory::new(),
+            local_players: Vec::new(),
+            net_players: Vec::new(),
             current_frame: 0,
             held_input_count,
             skip_frames: 0,
@@ -49,6 +73,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
             saved_rollback_states: HashMap::new(),
             allowed_rollback: 9,
             rollback_to: None,
+            players: Vec::new(),
         }
     }
     pub fn current_frame(&self) -> usize {
@@ -60,49 +85,75 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
     }
 
     //InputODO turn this into an option
-    pub fn handle_local_input(&mut self, data: Input) -> Option<Packet<Input>> {
-        if !self.local_player.has_input(self.delayed_current_frame()) {
+    pub fn handle_local_input(
+        &mut self,
+        data: Input,
+        player: PlayerHandle,
+    ) -> Option<Packet<Input>> {
+        assert_eq!(
+            self.players[player.0].player_type,
+            PlayerType::Local,
+            "Must add local input to a local player."
+        );
+
+        let local_player = &mut self.local_players[self.players[player.0].data_index];
+        if !local_player.has_input(self.delayed_current_frame()) {
             // CORRECInput InputHIS INPUInput CHECKING
             // we want to send over teh most recent x inputs
             // and if we dont have enough inputs to send, tahts ok, but we dont wanna send them erroneously
-            let input_frame = self.local_player.add_input(data);
+            let input_frame = local_player.add_input(data);
             let buffer_size = self.packet_buffer_size;
 
-            let (range, data) = self.local_player.get_inputs(input_frame, buffer_size);
+            let (range, data) = local_player.get_inputs(input_frame, buffer_size);
 
-            Some(Packet::Inputs(
-                self.current_frame,
-                range.first,
-                data.iter().cloned().collect(),
-            ))
+            Some(Packet {
+                player_handle: player,
+                data: PacketData::Inputs(
+                    self.current_frame,
+                    range.first,
+                    data.iter().cloned().collect(),
+                ),
+            })
         } else {
             None
         }
     }
 
-    pub fn handle_net_input(&mut self, frame: usize, input: Input) {
-        match self.net_player.add_input(frame, input) {
+    pub fn handle_net_input(&mut self, frame: usize, input: Input, player: PlayerHandle) {
+        assert_eq!(
+            self.players[player.0].player_type,
+            PlayerType::Net,
+            "Must handle networked input for a networked player."
+        );
+
+        let net_player = &mut self.net_players[self.players[player.0].data_index];
+        match net_player.add_input(frame, input) {
             PredictionResult::Unpredicted => (),
             PredictionResult::Correct => {
-                let removed_state = self.saved_rollback_states.remove(&frame);
-                assert!(
-                    removed_state.is_some(),
-                    "Correct prediction should havea corresponding save state to drop."
-                );
+                if self
+                    .net_players
+                    .iter()
+                    .all(|net| !net.is_predicted_input(frame))
+                {
+                    let removed_state = self.saved_rollback_states.remove(&frame);
+                    assert!(
+                        removed_state.is_some(),
+                        "Correct prediction with no remaining predictions for that frame should have a corresponding save state to drop."
+                    );
+                }
             }
             PredictionResult::Wrong => {
-                dbg!(self.current_frame());
-                dbg!(frame);
                 let state = self.saved_rollback_states.remove(&frame);
-                dbg!(&self.saved_rollback_states.keys().collect::<Vec<_>>());
                 assert!(
                     state.is_some(),
-                    "Misprediction should have a corrseponding save state."
+                    "Misprediction on a netplayer's input should have a corrseponding save state."
                 );
                 if let Some((old_frame, _)) = self.rollback_to {
+                    // prefer to rollback to an older frame if one's available
                     if old_frame > frame {
                         self.rollback_to = Some((frame, state.unwrap()));
                     } else {
+                        // should be ok to lose this state, because the rollback will recreate it if necessary
                     }
                 } else {
                     self.rollback_to = Some((frame, state.unwrap()));
@@ -112,26 +163,31 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
     }
 
     pub fn handle_packet(&mut self, packet: Packet<Input>) -> Option<Packet<Input>> {
-        match packet {
-            Packet::Inputs(sent_on_frame, start_frame, inputs) => {
+        let Packet {
+            player_handle,
+            data,
+        } = packet;
+        match data {
+            PacketData::Inputs(sent_on_frame, start_frame, inputs) => {
                 self.skip_frames = self
                     .current_frame
                     .checked_sub(sent_on_frame + self.network_delay)
                     .unwrap_or(0);
                 for (idx, input) in inputs.into_iter().enumerate() {
                     let frame = start_frame + idx;
-                    self.handle_net_input(frame, input);
+                    self.handle_net_input(frame, input, player_handle);
                 }
                 None
             }
-            Packet::Request(frame) => {
+            PacketData::Request(frame) => {
+                // TODO iterate through all local players and send out multiple sets of data, one for each local player
                 let (range, data) = self.local_player.get_inputs(frame, 1);
 
                 Some(Packet::Provide(range.first, data.iter().cloned().collect()))
             }
-            Packet::Provide(frame, inputs) => {
+            PacketData::Provide(frame, inputs) => {
                 for (idx, input) in inputs.into_iter().enumerate() {
-                    self.handle_net_input(frame + idx, input);
+                    self.handle_net_input(frame + idx, input, player_handle);
                 }
                 None
             }
