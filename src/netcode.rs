@@ -7,6 +7,8 @@ use std::collections::HashMap;
 // TODO, add a bunch of functions to perform syncing of the clients, but not pass input back and forth
 // TODO, make everything return a Result, taht way users can decide whether or not to handle errorsalso
 
+// TODO, create getters/setters for all the public properties
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 enum PlayerType {
     Local,
@@ -23,23 +25,6 @@ struct PlayerInfo {
     id: usize,
 }
 
-pub struct NetcodeClient<Input, GameState> {
-    local_players: Vec<(PlayerHandle, LocalHistory<Input>)>,
-    net_players: Vec<(PlayerHandle, NetworkedHistory<Input>)>,
-    current_frame: usize,
-    held_input_count: usize,
-    skip_frames: usize,
-    saved_rollback_states: HashMap<usize, GameState>,
-    rollback_to: Option<(usize, GameState)>,
-    players: Vec<PlayerInfo>,
-
-    // TODO, ask for network_delay for each player
-    pub network_delay: usize,
-    pub input_delay: usize,
-    pub allowed_rollback: usize,
-    pub packet_buffer_size: usize,
-}
-
 pub struct InputSet<'a, Input> {
     pub inputs: Vec<&'a [Input]>,
 }
@@ -49,6 +34,20 @@ pub enum Packet<Input> {
     Inputs(PlayerHandle, usize, usize, Vec<Input>),
     Request(usize),
     Provide(Vec<(PlayerHandle, usize, Vec<Input>)>),
+}
+pub struct NetcodeClient<Input, GameState> {
+    local_players: Vec<(PlayerHandle, LocalHistory<Input>)>,
+    net_players: Vec<(PlayerHandle, NetworkedHistory<Input>)>,
+    current_frame: usize,
+    held_input_count: usize,
+    skip_frames: usize,
+    saved_rollback_states: HashMap<usize, GameState>,
+    rollback_to: Option<(usize, GameState)>,
+    players: Vec<PlayerInfo>,
+    network_delay: Vec<usize>,
+    input_delay: usize,
+    allowed_rollback: usize,
+    packet_buffer_size: usize,
 }
 
 impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::Debug>
@@ -63,13 +62,50 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
             skip_frames: 0,
             packet_buffer_size: 10,
             input_delay: 1,
-            network_delay: 0,
+            network_delay: Vec::new(),
             saved_rollback_states: HashMap::new(),
             allowed_rollback: 9,
             rollback_to: None,
             players: Vec::new(),
         }
     }
+
+    pub fn input_delay(&self) -> usize {
+        self.input_delay
+    }
+    pub fn set_input_delay(&mut self, value: usize) {
+        self.input_delay = value;
+    }
+    pub fn allowed_rollback(&self) -> usize {
+        self.allowed_rollback
+    }
+    pub fn set_allowed_rollback(&mut self, value: usize) {
+        self.allowed_rollback = value;
+    }
+    pub fn packet_buffer_size(&self) -> usize {
+        self.packet_buffer_size
+    }
+    pub fn set_packet_buffer_size(&mut self, value: usize) {
+        self.packet_buffer_size = value;
+    }
+
+    pub fn get_network_delay(&self, player: PlayerHandle) -> usize {
+        assert!(
+            self.players[player.0].player_type == PlayerType::Net,
+            "Must handle networked input for a networked player."
+        );
+
+        self.network_delay[self.players[player.0].data_index]
+    }
+    pub fn set_network_delay(&mut self, value: usize, player: PlayerHandle) {
+        assert!(
+            self.players[player.0].player_type == PlayerType::Net,
+            "Must handle networked input for a networked player."
+        );
+
+        self.network_delay[self.players[player.0].data_index] = value;
+    }
+
     pub fn current_frame(&self) -> usize {
         self.current_frame
     }
@@ -99,19 +135,18 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
         };
         self.net_players.push((handle, NetworkedHistory::new()));
         self.players.push(info);
+        self.network_delay.push(0);
 
         handle
     }
 
-    //InputODO turn this into an option
     pub fn handle_local_input(
         &mut self,
         data: Input,
         player: PlayerHandle,
     ) -> Option<Packet<Input>> {
-        assert_eq!(
-            self.players[player.0].player_type,
-            PlayerType::Local,
+        assert!(
+            self.players[player.0].player_type == PlayerType::Local,
             "Must add local input to a local player."
         );
         let delayed_current_frame = self.delayed_current_frame();
@@ -137,9 +172,8 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
     }
 
     pub fn handle_net_input(&mut self, frame: usize, input: Input, player: PlayerHandle) {
-        assert_eq!(
-            self.players[player.0].player_type,
-            PlayerType::Net,
+        assert!(
+            self.players[player.0].player_type == PlayerType::Net,
             "Must handle networked input for a networked player."
         );
 
@@ -179,7 +213,8 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                         // we're not already rolling back, so lets go
                         self.rollback_to = Some((frame, state));
                     }
-                } else {
+                } else if self.rollback_to.is_none() {
+                    // panic if we don't have a state to rollback to
                     panic!("No state to rollback to.");
                 }
             }
@@ -190,9 +225,14 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
     pub fn handle_packet(&mut self, packet: Packet<Input>) -> Option<Packet<Input>> {
         match packet {
             Packet::Inputs(player_handle, sent_on_frame, start_frame, inputs) => {
+                assert!(
+                    self.players[player_handle.0].player_type == PlayerType::Net,
+                    "Must handle networked input for a networked player."
+                );
+
                 self.skip_frames = self
                     .current_frame
-                    .checked_sub(sent_on_frame + self.network_delay)
+                    .checked_sub(sent_on_frame + self.get_network_delay(player_handle))
                     .unwrap_or(0);
                 for (idx, input) in inputs.into_iter().enumerate() {
                     let frame = start_frame + idx;

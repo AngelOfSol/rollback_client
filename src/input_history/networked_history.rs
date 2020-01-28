@@ -85,13 +85,6 @@ impl<T: Default + Clone + PartialEq> NetworkedHistory<T> {
             .unwrap_or(false)
     }
 
-    pub fn is_canon_input(&self, frame: usize) -> bool {
-        self.adjust_frame(frame)
-            .and_then(|frame| self.canon.get(frame))
-            .map(|canon| *canon == Canon::Canon)
-            .unwrap_or(false)
-    }
-
     pub fn is_predicted_input(&self, frame: usize) -> bool {
         self.adjust_frame(frame)
             .and_then(|frame| self.canon.get(frame))
