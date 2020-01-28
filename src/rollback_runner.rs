@@ -1,6 +1,6 @@
 use crate::game::{GameInput, GameState};
 use crate::net_client::TestNetClient;
-use crate::netcode::{self, NetcodeClient};
+use crate::netcode::{self, NetcodeClient, PlayerHandle};
 use ggez::event::EventHandler;
 use ggez::event::{KeyCode, KeyMods};
 use ggez::{graphics, Context, GameResult};
@@ -16,6 +16,8 @@ pub struct RollbackRunner {
     client: TestNetClient,
     ping: f32,
     start_time: Instant,
+    local_handle: PlayerHandle,
+    network_handle: PlayerHandle,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -36,37 +38,51 @@ enum RollbackPacket {
     Netcode(netcode::Packet<GameInput>),
 }
 
-impl<'a> netcode::RollbackableGameState for (&'a mut GameState, bool) {
+impl<'a> netcode::RollbackableGameState for GameState {
     type Input = GameInput;
     type SavedState = GameState;
     fn advance_frame(&mut self, input: netcode::InputSet<'_, Self::Input>) {
-        if self.1 {
-            self.0
-                .update(&input.local.last().unwrap(), &input.net.last().unwrap());
-        } else {
-            self.0
-                .update(&input.net.last().unwrap(), &input.local.last().unwrap());
-        }
+        self.update(
+            &input.inputs[0].last().unwrap(),
+            &input.inputs[1].last().unwrap(),
+        );
     }
     fn save_state(&self) -> Self::SavedState {
-        self.0.clone()
+        self.clone()
     }
     fn load_state(&mut self, load: Self::SavedState) {
-        *self.0 = load;
+        *self = load;
     }
 }
 
 impl RollbackRunner {
     pub fn new(ctx: &mut Context, player1: bool, client: TestNetClient) -> RollbackRunner {
+        let mut delay_client = NetcodeClient::new(100);
+        let (local_handle, network_handle) = if player1 {
+            (
+                delay_client.add_local_player(),
+                delay_client.add_net_player(),
+            )
+        } else {
+            let (l, r) = (
+                delay_client.add_net_player(),
+                delay_client.add_local_player(),
+            );
+
+            (r, l)
+        };
+
         // Load/create resources such as images here.
         RollbackRunner {
             current_state: GameState::new(ctx),
-            delay_client: NetcodeClient::new(100),
             input_state: 0,
+            delay_client: delay_client,
             player1,
             client,
             ping: 0.0,
             start_time: Instant::now(),
+            local_handle,
+            network_handle,
         }
     }
 }
@@ -87,8 +103,10 @@ impl EventHandler for RollbackRunner {
                         let ping_time = current_time - pong_time;
                         //
                         self.ping = self.ping * 0.9 + ping_time as f32 * 0.1;
-                        self.delay_client.network_delay =
-                            ((self.ping + 3.0) / 32.0).ceil() as usize;
+                        self.delay_client.set_network_delay(
+                            ((self.ping + 3.0) / 32.0).ceil() as usize,
+                            self.network_handle,
+                        );
                     }
                     RollbackPacket::Netcode(input) => {
                         // this is for calculating how many frames to skip
@@ -110,9 +128,12 @@ impl EventHandler for RollbackRunner {
 
         let fps = if self.player1 { 60 } else { 60 };
         if ggez::timer::check_update_time(ctx, fps) {
-            if let Some(packet) = self.delay_client.handle_local_input(GameInput {
-                x_axis: self.input_state,
-            }) {
+            if let Some(packet) = self.delay_client.handle_local_input(
+                GameInput {
+                    x_axis: self.input_state,
+                },
+                self.local_handle,
+            ) {
                 self.client.send(&RollbackPacket::Netcode(packet)).unwrap();
             }
 
@@ -122,13 +143,9 @@ impl EventHandler for RollbackRunner {
                 .send(&RollbackPacket::Ping(current_time))
                 .unwrap();
 
-            let (client, game_state, player1) = (
-                &mut self.delay_client,
-                &mut self.current_state,
-                self.player1,
-            );
+            let (client, game_state) = (&mut self.delay_client, &mut self.current_state);
 
-            if let Some(packet) = client.update(&mut (game_state, player1)) {
+            if let Some(packet) = client.update(game_state) {
                 self.client.send(&RollbackPacket::Netcode(packet)).unwrap();
             }
         }
@@ -158,16 +175,25 @@ impl EventHandler for RollbackRunner {
                 }
                 KeyCode::W => self.client.packet_loss += 0.05,
                 KeyCode::S => self.client.packet_loss -= 0.05,
-                KeyCode::E => self.delay_client.allowed_rollback += 1,
-                KeyCode::Q => self.delay_client.allowed_rollback -= 1,
+                KeyCode::E => self
+                    .delay_client
+                    .set_allowed_rollback(self.delay_client.allowed_rollback() + 1),
+                KeyCode::Q => self
+                    .delay_client
+                    .set_allowed_rollback(self.delay_client.allowed_rollback() - 1),
+                KeyCode::Z => self
+                    .delay_client
+                    .set_input_delay(self.delay_client.input_delay() + 1),
+                KeyCode::C => self
+                    .delay_client
+                    .set_input_delay(self.delay_client.input_delay() - 1),
 
-                KeyCode::Z => self.delay_client.input_delay -= 1,
-                KeyCode::C => self.delay_client.input_delay += 1,
                 _ => (),
             };
 
-            self.delay_client.packet_buffer_size =
-                10.max(self.delay_client.input_delay + self.delay_client.allowed_rollback);
+            self.delay_client.set_packet_buffer_size(
+                10.max(self.delay_client.input_delay() + self.delay_client.allowed_rollback()),
+            );
 
             self.client.packet_loss = self.client.packet_loss.max(0.0).min(1.0);
             self.client.delay = self
@@ -192,7 +218,7 @@ impl EventHandler for RollbackRunner {
         self.current_state.draw(ctx, 100.0)?;
         graphics::draw(
             ctx,
-            &graphics::Text::new(format!("Delay: {:.2}f", self.delay_client.input_delay)),
+            &graphics::Text::new(format!("Delay: {:.2}f", self.delay_client.input_delay())),
             graphics::DrawParam::default().dest([30.0, 200.0]),
         )?;
         graphics::draw(
@@ -212,7 +238,7 @@ impl EventHandler for RollbackRunner {
             ctx,
             &graphics::Text::new(format!(
                 "Network Delay: {:.2}f",
-                self.delay_client.network_delay
+                self.delay_client.get_network_delay(self.network_handle)
             )),
             graphics::DrawParam::default().dest([30.0, 350.0]),
         )?;
@@ -220,7 +246,7 @@ impl EventHandler for RollbackRunner {
             ctx,
             &graphics::Text::new(format!(
                 "Allowed Rollback: {:.0}f",
-                self.delay_client.allowed_rollback
+                self.delay_client.allowed_rollback()
             )),
             graphics::DrawParam::default().dest([30.0, 400.0]),
         )?;
@@ -245,7 +271,7 @@ impl EventHandler for RollbackRunner {
             ctx,
             &graphics::Text::new(format!(
                 "Buffer Size (f): {}",
-                self.delay_client.packet_buffer_size,
+                self.delay_client.packet_buffer_size(),
             )),
             graphics::DrawParam::default().dest([300.0, 300.0]),
         )?;

@@ -84,12 +84,6 @@ impl<T: Default + Clone + PartialEq> NetworkedHistory<T> {
             .map(|canon| *canon != Canon::Empty)
             .unwrap_or(false)
     }
-    pub fn is_canon_input(&self, frame: usize) -> bool {
-        self.adjust_frame(frame)
-            .and_then(|frame| self.canon.get(frame))
-            .map(|canon| *canon == Canon::Canon)
-            .unwrap_or(false)
-    }
 
     pub fn is_predicted_input(&self, frame: usize) -> bool {
         self.adjust_frame(frame)
@@ -105,6 +99,11 @@ impl<T: Default + Clone + PartialEq> NetworkedHistory<T> {
             .unwrap_or(true)
     }
 
+    // TODO, rename to request_inputs
+    // to show that its a best effort to get the query'd for set of inputs
+    // and not a guarentee that you get the inputs you want
+    // also input range returned is considered a closed interval
+    // TODO: deal with what happens if you can't get any inputs
     pub fn get_inputs(&self, frame: usize, amt: usize) -> (InputRange, &[T]) {
         let frame = self.adjust_frame(frame).unwrap();
         let end_idx = self.data.len().min(frame + 1);
