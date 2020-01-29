@@ -1,6 +1,7 @@
 use crate::input_history::{LocalHistory, NetworkedHistory, PredictionResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::hash::Hash;
 
 // TODO, consider parameterizing the size of current_frame to not waste bytes on the fact that its
 // at least 4 bytes when 18 minutes of 60 FPS gameplay only needs a u16 (2 bytes)
@@ -15,7 +16,7 @@ enum PlayerType {
     Net,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct PlayerHandle(usize);
 
 impl PlayerHandle {
@@ -27,8 +28,7 @@ impl PlayerHandle {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 struct PlayerInfo {
     player_type: PlayerType,
-    data_index: usize,
-    id: usize,
+    id: PlayerHandle,
 }
 
 pub struct InputSet<'a, Input> {
@@ -42,15 +42,15 @@ pub enum Packet<Input> {
     Provide(Vec<(PlayerHandle, usize, Vec<Input>)>),
 }
 pub struct NetcodeClient<Input, GameState> {
-    local_players: Vec<(PlayerHandle, LocalHistory<Input>)>,
-    net_players: Vec<(PlayerHandle, NetworkedHistory<Input>)>,
+    local_players: HashMap<PlayerHandle, LocalHistory<Input>>,
+    net_players: HashMap<PlayerHandle, NetworkedHistory<Input>>,
     current_frame: usize,
     held_input_count: usize,
     skip_frames: usize,
     saved_rollback_states: HashMap<usize, GameState>,
     rollback_to: Option<(usize, GameState)>,
     players: Vec<PlayerInfo>,
-    network_delay: Vec<usize>,
+    network_delay: HashMap<PlayerHandle, usize>,
     input_delay: usize,
     allowed_rollback: usize,
     packet_buffer_size: usize,
@@ -61,14 +61,14 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
 {
     pub fn new(held_input_count: usize) -> Self {
         Self {
-            local_players: Vec::new(),
-            net_players: Vec::new(),
+            local_players: HashMap::new(),
+            net_players: HashMap::new(),
             current_frame: 0,
             held_input_count,
             skip_frames: 0,
             packet_buffer_size: 10,
             input_delay: 1,
-            network_delay: Vec::new(),
+            network_delay: HashMap::new(),
             saved_rollback_states: HashMap::new(),
             allowed_rollback: 9,
             rollback_to: None,
@@ -101,7 +101,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
             "Must handle networked input for a networked player."
         );
 
-        self.network_delay[self.players[player.id()].data_index]
+        self.network_delay[&player]
     }
     pub fn set_network_delay(&mut self, value: usize, player: PlayerHandle) {
         assert!(
@@ -109,7 +109,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
             "Must handle networked input for a networked player."
         );
 
-        self.network_delay[self.players[player.id()].data_index] = value;
+        self.network_delay.insert(player, value);
     }
 
     pub fn current_frame(&self) -> usize {
@@ -123,27 +123,27 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
     pub fn add_local_player(&mut self, index: usize) -> PlayerHandle {
         let handle = PlayerHandle(index);
         let info: PlayerInfo = PlayerInfo {
-            data_index: self.local_players.len(),
-            id: handle.0,
+            id: handle,
             player_type: PlayerType::Local,
         };
-        self.local_players.push((handle, LocalHistory::new()));
+        self.local_players.insert(handle, LocalHistory::new());
         self.players.push(info);
-        self.players.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+        self.players
+            .sort_by(|lhs, rhs| lhs.id.id().cmp(&rhs.id.id()));
 
         handle
     }
     pub fn add_net_player(&mut self, index: usize) -> PlayerHandle {
         let handle = PlayerHandle(index);
         let info: PlayerInfo = PlayerInfo {
-            data_index: self.net_players.len(),
-            id: handle.0,
+            id: handle,
             player_type: PlayerType::Net,
         };
-        self.net_players.push((handle, NetworkedHistory::new()));
+        self.net_players.insert(handle, NetworkedHistory::new());
         self.players.push(info);
-        self.players.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
-        self.network_delay.push(0);
+        self.players
+            .sort_by(|lhs, rhs| lhs.id.id().cmp(&rhs.id.id()));
+        self.network_delay.insert(handle, 0);
 
         handle
     }
@@ -158,7 +158,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
             "Must add local input to a local player."
         );
         let delayed_current_frame = self.delayed_current_frame();
-        let (_, local_player) = &mut self.local_players[self.players[player.id()].data_index];
+        let local_player = self.local_players.get_mut(&player).unwrap();
         if !local_player.has_input(delayed_current_frame) {
             // CORRECInput InputHIS INPUInput CHECKING
             // we want to send over teh most recent x inputs
@@ -185,7 +185,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
             "Must handle networked input for a networked player."
         );
 
-        let (_, net_player) = &mut self.net_players[self.players[player.id()].data_index];
+        let net_player = self.net_players.get_mut(&player).unwrap();
         match net_player.add_input(frame, input) {
             PredictionResult::Unpredicted => (),
             PredictionResult::Correct => {
@@ -316,11 +316,9 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                         .map(|info| {
                             //
                             let (range, inputs) = match info.player_type {
-                                PlayerType::Local => self.local_players[info.data_index]
-                                    .1
+                                PlayerType::Local => self.local_players[&info.id]
                                     .get_inputs(rollback_current_frame, self.held_input_count),
-                                PlayerType::Net => self.net_players[info.data_index]
-                                    .1
+                                PlayerType::Net => self.net_players[&info.id]
                                     .get_inputs(rollback_current_frame, self.held_input_count),
                             };
                             assert!(range.last == rollback_current_frame, "The last frame of input in the queue, should match the currently rollbacking frame.");
@@ -363,11 +361,9 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                     .map(|info| {
                         //
                         let (range, inputs) = match info.player_type {
-                            PlayerType::Local => self.local_players[info.data_index]
-                                .1
+                            PlayerType::Local => self.local_players[&info.id]
                                 .get_inputs(self.current_frame, self.held_input_count),
-                            PlayerType::Net => self.net_players[info.data_index]
-                                .1
+                            PlayerType::Net => self.net_players[&info.id]
                                 .get_inputs(self.current_frame, self.held_input_count),
                         };
                         assert!(range.last == self.current_frame, "The last frame of input in the queue, should match the currently rollbacking frame.");
@@ -396,8 +392,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
 
                 for net_player in self
                     .net_players
-                    .iter_mut()
-                    .map(|(_, ref mut net_player)| net_player)
+                    .values_mut()
                     .filter(|net_player| net_player.is_empty_input(current_frame))
                 {
                     net_player.predict(self.current_frame);
@@ -410,11 +405,9 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                         .map(|info| {
                             //
                             let (range, inputs) = match info.player_type {
-                                PlayerType::Local => self.local_players[info.data_index]
-                                    .1
+                                PlayerType::Local => self.local_players[&info.id]
                                     .get_inputs(self.current_frame, self.held_input_count),
-                                PlayerType::Net => self.net_players[info.data_index]
-                                    .1
+                                PlayerType::Net => self.net_players[&info.id]
                                     .get_inputs(self.current_frame, self.held_input_count),
                             };
                             assert!(range.last == self.current_frame, "The last frame of input in the queue, should match the currently rollbacking frame.");
