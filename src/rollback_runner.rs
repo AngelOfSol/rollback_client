@@ -58,19 +58,10 @@ impl<'a> netcode::RollbackableGameState for GameState {
 impl RollbackRunner {
     pub fn new(ctx: &mut Context, player1: bool, client: TestNetClient) -> RollbackRunner {
         let mut delay_client = NetcodeClient::new(100);
-        let (local_handle, network_handle) = if player1 {
-            (
-                delay_client.add_local_player(),
-                delay_client.add_net_player(),
-            )
-        } else {
-            let (l, r) = (
-                delay_client.add_net_player(),
-                delay_client.add_local_player(),
-            );
+        let (local_player_id, network_player_id) = if player1 { (0, 1) } else { (1, 0) };
 
-            (r, l)
-        };
+        let local_handle = delay_client.add_local_player(local_player_id);
+        let network_handle = delay_client.add_net_player(network_player_id);
 
         // Load/create resources such as images here.
         RollbackRunner {

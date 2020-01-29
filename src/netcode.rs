@@ -18,6 +18,12 @@ enum PlayerType {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub struct PlayerHandle(usize);
 
+impl PlayerHandle {
+    pub fn id(&self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 struct PlayerInfo {
     player_type: PlayerType,
@@ -91,19 +97,19 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
 
     pub fn get_network_delay(&self, player: PlayerHandle) -> usize {
         assert!(
-            self.players[player.0].player_type == PlayerType::Net,
+            self.players[player.id()].player_type == PlayerType::Net,
             "Must handle networked input for a networked player."
         );
 
-        self.network_delay[self.players[player.0].data_index]
+        self.network_delay[self.players[player.id()].data_index]
     }
     pub fn set_network_delay(&mut self, value: usize, player: PlayerHandle) {
         assert!(
-            self.players[player.0].player_type == PlayerType::Net,
+            self.players[player.id()].player_type == PlayerType::Net,
             "Must handle networked input for a networked player."
         );
 
-        self.network_delay[self.players[player.0].data_index] = value;
+        self.network_delay[self.players[player.id()].data_index] = value;
     }
 
     pub fn current_frame(&self) -> usize {
@@ -114,8 +120,8 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
         self.current_frame + self.input_delay
     }
 
-    pub fn add_local_player(&mut self) -> PlayerHandle {
-        let handle = PlayerHandle(self.players.len());
+    pub fn add_local_player(&mut self, index: usize) -> PlayerHandle {
+        let handle = PlayerHandle(index);
         let info: PlayerInfo = PlayerInfo {
             data_index: self.local_players.len(),
             id: handle.0,
@@ -123,11 +129,12 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
         };
         self.local_players.push((handle, LocalHistory::new()));
         self.players.push(info);
+        self.players.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
 
         handle
     }
-    pub fn add_net_player(&mut self) -> PlayerHandle {
-        let handle = PlayerHandle(self.players.len());
+    pub fn add_net_player(&mut self, index: usize) -> PlayerHandle {
+        let handle = PlayerHandle(index);
         let info: PlayerInfo = PlayerInfo {
             data_index: self.net_players.len(),
             id: handle.0,
@@ -135,6 +142,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
         };
         self.net_players.push((handle, NetworkedHistory::new()));
         self.players.push(info);
+        self.players.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
         self.network_delay.push(0);
 
         handle
@@ -146,11 +154,11 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
         player: PlayerHandle,
     ) -> Option<Packet<Input>> {
         assert!(
-            self.players[player.0].player_type == PlayerType::Local,
+            self.players[player.id()].player_type == PlayerType::Local,
             "Must add local input to a local player."
         );
         let delayed_current_frame = self.delayed_current_frame();
-        let (_, local_player) = &mut self.local_players[self.players[player.0].data_index];
+        let (_, local_player) = &mut self.local_players[self.players[player.id()].data_index];
         if !local_player.has_input(delayed_current_frame) {
             // CORRECInput InputHIS INPUInput CHECKING
             // we want to send over teh most recent x inputs
@@ -173,11 +181,11 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
 
     pub fn handle_net_input(&mut self, frame: usize, input: Input, player: PlayerHandle) {
         assert!(
-            self.players[player.0].player_type == PlayerType::Net,
+            self.players[player.id()].player_type == PlayerType::Net,
             "Must handle networked input for a networked player."
         );
 
-        let (_, net_player) = &mut self.net_players[self.players[player.0].data_index];
+        let (_, net_player) = &mut self.net_players[self.players[player.id()].data_index];
         match net_player.add_input(frame, input) {
             PredictionResult::Unpredicted => (),
             PredictionResult::Correct => {
