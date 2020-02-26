@@ -100,7 +100,6 @@ impl EventHandler for RollbackRunner {
                         );
                     }
                     RollbackPacket::Netcode(input) => {
-                        // this is for calculating how many frames to skip
                         if let Some(packet) = self.delay_client.handle_packet(input) {
                             self.client.send(&RollbackPacket::Netcode(packet)).unwrap();
                         };

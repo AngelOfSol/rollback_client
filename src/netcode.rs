@@ -160,9 +160,6 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
         let delayed_current_frame = self.delayed_current_frame();
         let local_player = self.local_players.get_mut(&player).unwrap();
         if !local_player.has_input(delayed_current_frame) {
-            // CORRECInput InputHIS INPUInput CHECKING
-            // we want to send over teh most recent x inputs
-            // and if we dont have enough inputs to send, tahts ok, but we dont wanna send them erroneously
             let input_frame = local_player.add_input(data);
             let buffer_size = self.packet_buffer_size;
 
@@ -203,9 +200,6 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
             }
             PredictionResult::Wrong => {
                 let state = self.saved_rollback_states.remove(&frame);
-                // TODO: this assert might not be true anymore if multiple people have mispredicted and the state has been removed for oen of them already
-                // instead we should verify that either, there is one to be rollback'd to, or that we're already rollbacking to this mispredicteds
-                // input, or earlier
 
                 // prefer to rollback to an older frame if one's available
                 if let Some(state) = state {
@@ -223,7 +217,11 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                     }
                 } else if self.rollback_to.is_none() {
                     // panic if we don't have a state to rollback to
-                    panic!("No state to rollback to.");
+                    // we should never actually be in a state where we've got predicted input for a frame
+                    // and no currently rollbacking frame AND no frame to rollback to waiting
+                    unreachable!(
+                        "No state to rollback to even though there is a mispredicted input."
+                    );
                 }
             }
         }
@@ -241,7 +239,8 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                 self.skip_frames = self
                     .current_frame
                     .checked_sub(sent_on_frame + self.get_network_delay(player_handle))
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                    .max(self.skip_frames);
                 for (idx, input) in inputs.into_iter().enumerate() {
                     let frame = start_frame + idx;
                     self.handle_net_input(frame, input, player_handle);
@@ -249,8 +248,6 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                 None
             }
             Packet::Request(frame) => {
-                // TODO iterate through all local players and send out multiple sets of data, one for each local player
-
                 let requested_data: Vec<_> = self
                     .local_players
                     .iter()
@@ -329,6 +326,26 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
             }
         }
 
+        if self.current_frame % self.held_input_count == 0 {
+            let clear_target = self
+                .current_frame
+                .checked_sub(self.held_input_count + self.allowed_rollback)
+                .unwrap_or(0);
+            for (_, local_player) in self.local_players.iter_mut() {
+                local_player.clean(clear_target);
+            }
+            for (_, net_player) in self.net_players.iter_mut() {
+                net_player.clean(clear_target);
+            }
+        }
+
+        let earliest_predicted_input_diff = self
+            .saved_rollback_states
+            .keys()
+            .min()
+            .and_then(|frame| self.current_frame.checked_sub(*frame))
+            .unwrap_or(0);
+
         if self.skip_frames > 0 {
             self.skip_frames -= 1;
             None
@@ -340,20 +357,8 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                 .net_players
                 .iter()
                 .all(|(_, net_players)| net_players.has_input(self.current_frame))
+            && earliest_predicted_input_diff < self.allowed_rollback
         {
-            if self.current_frame % self.held_input_count == 0 {
-                let clear_target = self
-                    .current_frame
-                    .checked_sub(self.held_input_count + self.allowed_rollback)
-                    .unwrap_or(0);
-                for (_, local_player) in self.local_players.iter_mut() {
-                    local_player.clean(clear_target);
-                }
-                for (_, net_player) in self.net_players.iter_mut() {
-                    net_player.clean(clear_target);
-                }
-            }
-
             game.advance_frame(InputSet {
                 inputs: self
                     .players
@@ -366,7 +371,10 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                             PlayerType::Net => self.net_players[&info.id]
                                 .get_inputs(self.current_frame, self.held_input_count),
                         };
-                        assert!(range.last == self.current_frame, "The last frame of input in the queue, should match the currently rollbacking frame.");
+                        assert!(
+                            range.last == self.current_frame,
+                            "The last frame of input in the queue, should match the current frame."
+                        );
                         inputs
                     })
                     .collect(),
@@ -376,13 +384,7 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
 
             None
         } else {
-            if self
-                .saved_rollback_states
-                .keys()
-                .min()
-                .and_then(|frame| self.current_frame.checked_sub(*frame))
-                .unwrap_or(0)
-                < self.allowed_rollback
+            if earliest_predicted_input_diff < self.allowed_rollback
                 && self.current_frame > self.allowed_rollback
             {
                 self.saved_rollback_states
@@ -403,14 +405,13 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
                         .players
                         .iter()
                         .map(|info| {
-                            //
                             let (range, inputs) = match info.player_type {
                                 PlayerType::Local => self.local_players[&info.id]
                                     .get_inputs(self.current_frame, self.held_input_count),
                                 PlayerType::Net => self.net_players[&info.id]
                                     .get_inputs(self.current_frame, self.held_input_count),
                             };
-                            assert!(range.last == self.current_frame, "The last frame of input in the queue, should match the currently rollbacking frame.");
+                            assert!(range.last == self.current_frame, "The last frame of input in the queue, should match the currently being predicted frame.");
                             inputs
                         })
                         .collect(),
@@ -419,7 +420,9 @@ impl<Input: Clone + Default + PartialEq + std::fmt::Debug, GameState: std::fmt::
 
                 None
             } else {
-                Some(Packet::Request(self.current_frame))
+                Some(Packet::Request(
+                    self.current_frame - earliest_predicted_input_diff,
+                ))
             }
         }
     }
