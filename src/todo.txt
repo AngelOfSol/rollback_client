@@ -1,0 +1,64 @@
+[x] add checks for keyboard keys
+[x] feed input into gamestate
+    [x] left arrow makes p1 go left
+    [x] right arrow makes p1 go right
+[x] let start of game select p1 or p2
+    [x] change target of inputs to either p1's array or p2's array
+[x] connect over UDP on localhost
+    [x] choose host or client
+    [x] host provides port to serve from
+    [x] client provides port to communicate with
+    [x] send basic ping packet that outputs to STDOUT
+[x] create connect functions and wait_for_connection
+    [x] connect function repeatedly pings target until it recieves an Ack packet
+    [x] waits for a ping and then sends an ack packet after connecting
+[x] rename RollbackClient to UDP client
+[x] add facade that can introduce network conditions
+    [x] adds delay to incoming input
+    [x] randomly drops incoming inputs
+[x] add gameplay
+    [x] host chooses which player she is
+[x] add ping calculation
+[x] fix clock drift
+[x] add delay netcode
+[x] add debug display and editing for realtime leakiness
+    [x] packet loss
+    [x] delay
+[x] tighten up implementation as tight as possible
+    [x] make it as simple as possible in every spot
+    [x] make it as self explanatory in every spot
+    [x] separate out input structures
+    [x] make the delay handler store input and return it
+        [x] tell the client when to run a frame
+        [x] tell the client when to do nothing
+        [x] tell the client when to do anything else
+    [x] delay handler holds ALL the input and the current frame of the simulation?
+    
+
+[x] make two types of input histories, local and networked
+[x] tighten/clear up the way input_ranges are calculated
+[x] figure out how to calculate how many inputs should go in a packet
+    [x] this could be just a PICK an amount
+    [x] if we do this we can  
+    [x] just let the client decide all of this
+[x] seperate out network delay and extra_delay as fields to be changed
+[x] call clean
+
+
+[x] IMPLEMENT ROLLBACK!!!
+[x] address buginess
+    [x] when starting up with only rollback, the game does not play at fullrate
+[] expose additional rollback statistics
+    [] how often are rollbacks
+[] consider api ideas
+[-] consider reworking how resaving works.
+    [-] move back to the option format, because if for some reason, a correction for a later packet comes in
+        as long as you revert back to the frame where the rollback is saved, you can resave that 
+        [-] this requires you to replay everytime you find out the answer to a prediction
+[x] tighten the code as much as possible
+[] comment the code as much as possible
+[x] figure out how to make it easier for the client to understand p1 vs p2
+[x] possibly generalize to more players?  infinte number of local players vs internet players
+    [x] give out player handles
+    [x] when removing a save state, only remove it if all players have unpredicted input 
+    [x] when adding a player, return a numeric ID, every client needs to use the same IDs
